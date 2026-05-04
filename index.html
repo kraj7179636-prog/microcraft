@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Minecraft Mobile Build</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #87CEEB; touch-action: none; font-family: sans-serif; }
+        #ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
+        .crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-size: 24px; }
+        
+        /* जॉयस्टिक */
+        #joy-bound { 
+            position: absolute; bottom: 40px; left: 40px; width: 110px; height: 110px; 
+            background: rgba(255,255,255,0.15); border-radius: 50%; pointer-events: auto;
+        }
+        #joy-stick { position: absolute; top: 35px; left: 35px; width: 40px; height: 40px; background: #fff; border-radius: 50%; }
+
+        /* इन्वेंटरी */
+        #hotbar { 
+            position: absolute; bottom: 15px; left: 50%; transform: translateX(-50%); 
+            background: rgba(0,0,0,0.7); display: flex; padding: 5px; border-radius: 5px; pointer-events: auto;
+        }
+        .slot { width: 50px; height: 50px; border: 2px solid #555; margin: 2px; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; }
+
+        /* माइनिंग बार */
+        #mine-bar { position: absolute; top: 60%; left: 50%; transform: translateX(-50%); width: 100px; height: 8px; background: rgba(0,0,0,0.5); border: 1px solid white; display: none; }
+        #mine-prog { width: 0%; height: 100%; background: #0f0; }
+
+        #loading { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; color: #fff; display: flex; align-items: center; justify-content: center; z-index: 100; }
+    </style>
+</head>
+<body>
+    <div id="loading"><h1>Minecraft World Loading...</h1></div>
+    <div id="ui">
+        <div class="crosshair">+</div>
+        <div id="mine-bar"><div id="mine-prog"></div></div>
+        <div id="hotbar">
+            <div class="slot" style="background:#4a2f1b">WOOD</div>
+            <div class="slot" id="count">0</div>
+        </div>
+        <div id="joy-bound"><div id="joy-stick"></div></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/loaders/GLTFLoader.js"></script>
+
+    <script>
+        let scene, camera, renderer, steve, worldGroup, arm;
+        let move = { f: 0, r: 0 }, inventory = 0, time = 0;
+        let isHolding = false, mineProgress = 0;
+        const loader = new THREE.GLTFLoader();
+        const raycaster = new THREE.Raycaster();
+
+        init();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+
+            // प्लेयर सेटअप
+            steve = new THREE.Group();
+            steve.position.set(0, 10, 0);
+            steve.add(camera);
+            camera.position.set(0, 1.2, 0); 
+            scene.add(steve);
+
+            // हाथ (Hand)
+            const armGeo = new THREE.BoxGeometry(0.3, 0.7, 0.3);
+            const armMat = new THREE.MeshLambertMaterial({color: 0xffdbac});
+            arm = new THREE.Mesh(armGeo, armMat);
+            arm.position.set(0.6, -0.6, -0.8);
+            camera.add(arm);
+
+            // वर्ल्ड फाइल (minecraft_world.glb आपके फोल्डर में होनी चाहिए)
+            loader.load('minecraft_world.glb', (gltf) => {
+                worldGroup = gltf.scene;
+                worldGroup.scale.set(10, 10, 10);
+                scene.add(worldGroup);
+                document.getElementById('loading').style.display = 'none';
+                animate();
+            });
+
+            setupControls();
+        }
+
+        function setupControls() {
+            const bound = document.getElementById('joy-bound');
+            const stick = document.getElementById('joy-stick');
+            
+            bound.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                const t = e.touches[0];
+                const rect = bound.getBoundingClientRect();
+                const x = t.clientX - (rect.left + rect.width/2);
+                const y = t.clientY - (rect.top + rect.height/2);
+                const d = Math.min(Math.sqrt(x*x+y*y), 40);
+                const a = Math.atan2(y, x);
+                stick.style.transform = `translate(${Math.cos(a)*d}px, ${Math.sin(a)*d}px)`;
+                move.r = (Math.cos(a)*d)/40; move.f = -(Math.sin(a)*d)/40;
+            });
+
+            bound.addEventListener('touchend', () => {
+                stick.style.transform = 'translate(0,0)'; move.f = 0; move.r = 0;
+            });
+
+            let lastX, lastY, touchStart;
+            window.addEventListener('touchstart', (e) => {
+                if(e.target.id === 'joy-bound') return;
+                touchStart = Date.now();
+                isHolding = true;
+            });
+
+            window.addEventListener('touchmove', (e) => {
+                if(e.target.id === 'joy-bound') return;
+                const t = e.touches[0];
+                if (lastX && lastY) {
+                    steve.rotation.y -= (t.clientX - lastX) * 0.005;
+                    camera.rotation.x -= (t.clientY - lastY) * 0.005;
+                    camera.rotation.x = Math.max(-1.4, Math.min(1.4, camera.rotation.x));
+                }
+                lastX = t.clientX; lastY = t.clientY;
+            });
+
+            window.addEventListener('touchend', () => {
+                if (Date.now() - touchStart < 300 && inventory > 0 && !isHolding) {
+                    placeBlock();
+                }
+                isHolding = false;
+                mineProgress = 0;
+                document.getElementById('mine-bar').style.display = 'none';
+                lastX = null; lastY = null;
+            });
+        }
+
+        function placeBlock() {
+            raycaster.setFromCamera({x:0, y:0}, camera);
+            const hits = raycaster.intersectObjects(worldGroup.children, true);
+            if (hits.length > 0 && hits[0].distance < 6) {
+                const b = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial({color: 0x8b4513}));
+                b.position.copy(hits[0].point).add(hits[0].face.normal.multiplyScalar(0.5));
+                scene.add(b); 
+                worldGroup.add(b); // ताकि इसे दोबारा माइन किया जा सके
+                inventory--;
+                document.getElementById('count').innerText = inventory;
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            time += 0.1;
+
+            // प्लेयर मूवमेंट
+            const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+            dir.y = 0; dir.normalize();
+            const side = new THREE.Vector3().crossVectors(camera.up, dir).normalize();
+            steve.position.addScaledVector(dir, move.f * 0.15);
+            steve.position.addScaledVector(side, move.r * 0.15);
+
+            // ग्रेविटी
+            raycaster.set(new THREE.Vector3(steve.position.x, steve.position.y + 2, steve.position.z), new THREE.Vector3(0, -1, 0));
+            const floor = raycaster.intersectObjects(worldGroup.children, true);
+            if (floor.length > 0) steve.position.y = THREE.MathUtils.lerp(steve.position.y, floor[0].point.y, 0.2);
+
+            // माइनिंग और हाथ का एनीमेशन
+            if (isHolding) {
+                raycaster.setFromCamera({x:0, y:0}, camera);
+                const hits = raycaster.intersectObjects(worldGroup.children, true);
+                
+                if (hits.length > 0 && hits[0].distance < 6) {
+                    mineProgress += 0.03;
+                    document.getElementById('mine-bar').style.display = 'block';
+                    document.getElementById('mine-prog').style.width = (mineProgress * 50) + "%";
+                    
+                    // हाथ का एनीमेशन
+                    arm.position.z = -0.8 + Math.sin(time * 5) * 0.15;
+                    arm.rotation.x = Math.sin(time * 5) * 0.2;
+
+                    if (mineProgress >= 2) {
+                        hits[0].object.visible = false; 
+                        hits[0].object.position.y = -500; // हटा दिया
+                        inventory++;
+                        document.getElementById('count').innerText = inventory;
+                        isHolding = false;
+                        mineProgress = 0;
+                        document.getElementById('mine-bar').style.display = 'none';
+                    }
+                }
+            } else {
+                if (move.f !== 0 || move.r !== 0) {
+                    arm.position.y = -0.6 + Math.sin(time * 2) * 0.05;
+                } else {
+                    arm.position.lerp(new THREE.Vector3(0.6, -0.6, -0.8), 0.1);
+                }
+            }
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
